@@ -1,6 +1,5 @@
-
 --[[
-  UNIVERSITY OF CEBU HUB  (one script, one menu)
+  JAN REPUBLIC HUB  (one script, one menu)
   Tabs:  ⚡ AUTO   🍬 FARM   ☯ RITUAL   🔋 SAVER
   AUTO runs the candy farm, and whenever Yin & Yang are available it runs the
   Yin & Yang session FIRST (priority), then goes back to the candy farm.
@@ -72,15 +71,16 @@ local BAD = Color3.fromRGB(244, 63, 94)
 local WARN = Color3.fromRGB(251, 191, 36)
 local OFFCOL = Color3.fromRGB(70, 76, 104)
 
--- { color1, color2, backgroundTransparency, textColor }
+-- { color1, color2, backgroundTransparency, textColor, textStrokeTransparency }
+-- solid, darker fills + a soft dark text outline so the label never blends into the button
 local STYLES = {
-	primary = { Color3.fromRGB(124, 92, 255), Color3.fromRGB(0, 190, 200), 0.05, WHITE },
-	success = { Color3.fromRGB(34, 197, 120), Color3.fromRGB(16, 150, 120), 0.05, WHITE },
-	danger = { Color3.fromRGB(244, 63, 94), Color3.fromRGB(190, 35, 90), 0.05, WHITE },
-	info = { Color3.fromRGB(59, 130, 246), Color3.fromRGB(99, 102, 241), 0.05, WHITE },
-	glass = { Color3.fromRGB(120, 128, 170), Color3.fromRGB(78, 84, 120), 0.5, WHITE },
-	dark = { Color3.fromRGB(46, 46, 60), Color3.fromRGB(14, 14, 22), 0.08, WHITE },
-	light = { Color3.fromRGB(250, 250, 255), Color3.fromRGB(205, 208, 226), 0.05, Color3.fromRGB(20, 22, 34) },
+	primary = { Color3.fromRGB(112, 80, 255), Color3.fromRGB(0, 150, 175), 0, WHITE, 0.45 },
+	success = { Color3.fromRGB(22, 150, 92), Color3.fromRGB(10, 105, 84), 0, WHITE, 0.45 },
+	danger = { Color3.fromRGB(215, 40, 76), Color3.fromRGB(150, 25, 68), 0, WHITE, 0.45 },
+	info = { Color3.fromRGB(37, 99, 235), Color3.fromRGB(70, 62, 210), 0, WHITE, 0.45 },
+	glass = { Color3.fromRGB(62, 68, 106), Color3.fromRGB(38, 42, 74), 0.1, WHITE, 0.4 },
+	dark = { Color3.fromRGB(40, 40, 54), Color3.fromRGB(12, 12, 20), 0, WHITE, 0.4 },
+	light = { Color3.fromRGB(250, 250, 255), Color3.fromRGB(205, 208, 226), 0, Color3.fromRGB(16, 18, 30), 1 },
 }
 
 local function tween(obj, t, props, style, dir)
@@ -131,18 +131,20 @@ local function getGuiParent()
 end
 
 local parent = getGuiParent()
-for _, n in ipairs({ "UniversityOfCebuHub", "UoCBlackScreen", "UniversityOfCebuMenu", "UltraSaverBlack",
-	"YinYangMenu", "PositionMenu", "UltraBatterySaverGui" }) do
+for _, n in ipairs({ "JanRepublicHub", "JanBlackScreen", "UniversityOfCebuHub", "UoCBlackScreen",
+	"UniversityOfCebuMenu", "UltraSaverBlack", "YinYangMenu", "PositionMenu", "UltraBatterySaverGui" }) do
 	local o = parent:FindFirstChild(n)
 	if o then o:Destroy() end
 end
-local oldBlur = Lighting:FindFirstChild("UoCGlassBlur")
-if oldBlur then oldBlur:Destroy() end
+for _, n in ipairs({ "JanGlassBlur", "UoCGlassBlur" }) do
+	local oldBlur = Lighting:FindFirstChild(n)
+	if oldBlur then oldBlur:Destroy() end
+end
 
 ----------------------------------------------------------------
 -- BLUR (glass + motion pulse)
 ----------------------------------------------------------------
-local Blur = make("BlurEffect", { Name = "UoCGlassBlur", Size = 0 }, Lighting)
+local Blur = make("BlurEffect", { Name = "JanGlassBlur", Size = 0 }, Lighting)
 
 local function baseBlur()
 	return (uiFx and not minimized and not BLACK_SCREEN) and 6 or 0
@@ -165,7 +167,7 @@ end
 ----------------------------------------------------------------
 local FULL_H, HEAD_H, WIDTH = 392, 52, 340
 
-local Gui = make("ScreenGui", { Name = "UniversityOfCebuHub", ResetOnSpawn = false, DisplayOrder = 1000 }, parent)
+local Gui = make("ScreenGui", { Name = "JanRepublicHub", ResetOnSpawn = false, DisplayOrder = 1000 }, parent)
 
 local Main = make("Frame", {
 	Name = "Main",
@@ -187,9 +189,9 @@ local MainGrad = make("UIGradient", {
 		ColorSequenceKeypoint.new(1, Color3.fromRGB(6, 46, 56)),
 	}),
 	Transparency = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 0.14),
-		NumberSequenceKeypoint.new(0.5, 0.28),
-		NumberSequenceKeypoint.new(1, 0.18),
+		NumberSequenceKeypoint.new(0, 0.08),
+		NumberSequenceKeypoint.new(0.5, 0.18),
+		NumberSequenceKeypoint.new(1, 0.1),
 	}),
 	Rotation = 35,
 }, Main)
@@ -225,13 +227,13 @@ local Logo = make("Frame", {
 round(Logo, 17)
 make("UIGradient", { Color = ColorSequence.new(ACCENT, ACCENT2), Rotation = 45 }, Logo)
 text(Logo, {
-	Size = UDim2.fromScale(1, 1), Text = "UC", TextXAlignment = Enum.TextXAlignment.Center,
+	Size = UDim2.fromScale(1, 1), Text = "JR", TextXAlignment = Enum.TextXAlignment.Center,
 	Font = Enum.Font.GothamBlack, TextSize = 14,
 })
 
 text(Header, {
 	Size = UDim2.new(1, -170, 0, 20), Position = UDim2.fromOffset(56, 8),
-	Text = "UNIVERSITY OF CEBU", Font = Enum.Font.GothamBlack, TextSize = 14,
+	Text = "JAN REPUBLIC", Font = Enum.Font.GothamBlack, TextSize = 16,
 })
 text(Header, {
 	Size = UDim2.new(1, -170, 0, 14), Position = UDim2.fromOffset(56, 28),
@@ -415,7 +417,7 @@ end
 
 local function glass(par, h)
 	local f = make("Frame", {
-		Size = UDim2.new(1, 0, 0, h), BackgroundColor3 = WHITE, BackgroundTransparency = 0.93,
+		Size = UDim2.new(1, 0, 0, h), BackgroundColor3 = WHITE, BackgroundTransparency = 0.9,
 		BorderSizePixel = 0, LayoutOrder = nextOrder(),
 	}, par)
 	round(f, 12)
@@ -445,6 +447,8 @@ local function applyStyle(btn, styleName)
 	g.Color = ColorSequence.new(s[1], s[2])
 	btn.BackgroundTransparency = s[3]
 	btn.TextColor3 = s[4]
+	btn.TextStrokeColor3 = Color3.new(0, 0, 0)
+	btn.TextStrokeTransparency = s[5]
 end
 
 -- opts: n = buttons in the row, h = height (when not in a row)
@@ -634,7 +638,7 @@ local function remember(obj, props)
 end
 
 local function killEffect(obj)
-	if obj.Name == "UoCGlassBlur" then return end
+	if obj.Name == "JanGlassBlur" then return end
 	if obj:IsA("BloomEffect") or obj:IsA("BlurEffect") or obj:IsA("SunRaysEffect")
 		or obj:IsA("ColorCorrectionEffect") or obj:IsA("DepthOfFieldEffect") then
 		remember(obj, { "Enabled" })
@@ -772,14 +776,14 @@ end
 
 -- black screen overlay (+ hide the game's own UI)
 local BlackGui = make("ScreenGui", {
-	Name = "UoCBlackScreen", ResetOnSpawn = false, IgnoreGuiInset = true, DisplayOrder = 500,
+	Name = "JanBlackScreen", ResetOnSpawn = false, IgnoreGuiInset = true, DisplayOrder = 500,
 }, parent)
 local Black = make("Frame", {
 	Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(0, 0, 0), BorderSizePixel = 0, Visible = false,
 }, BlackGui)
 
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
-local KEEP = { UniversityOfCebuHub = true, UoCBlackScreen = true }
+local KEEP = { JanRepublicHub = true, JanBlackScreen = true }
 local hiddenGuis = {}
 
 local function hideGui(g)
