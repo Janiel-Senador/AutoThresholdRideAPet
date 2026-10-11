@@ -27,6 +27,10 @@ local SEAL_OPEN_WAIT = 3          -- seconds after submitting before the seal is
 local BEFORE_CHECKPOINT_WAIT = 3  -- seconds after the candy pot before going to checkpoint
 local WAYPOINT_REST = 1           -- candy farm: seconds spent at the waypoint
 
+-- ONLINE COUNTER (optional): paste your Firebase Realtime Database URL, e.g.
+-- "https://your-project-default-rtdb.firebaseio.com"  (leave "" to turn the counter off)
+local PRESENCE_URL = "https://janrepub-default-rtdb.firebaseio.com"
+
 ----------------------------------------------------------------
 -- STATE
 ----------------------------------------------------------------
@@ -34,7 +38,7 @@ local running, runId = false, 0
 
 -- candy farm
 local farmOn = true
-local farmWaypoint = nil
+local farmWaypoint = CHECKPOINT_POS -- built in: the candy farm uses the same checkpoint
 local interval = 4
 local priorityOn = true
 local selected = { [1] = false, [2] = false, [3] = false, [4] = false }
@@ -904,6 +908,19 @@ local function countdown(alive, sec, fmt)
 	end
 end
 
+-- debug log (shown in RITUAL > DIAGNOSTICS, can be copied) --------
+local logs = {}
+local logLabel
+local function logLine(msg)
+	table.insert(logs, ("[%s] %s"):format(os.date("%H:%M:%S"), msg))
+	if #logs > 80 then table.remove(logs, 1) end
+	if logLabel then
+		local lines = {}
+		for i = math.max(1, #logs - 8), #logs do lines[#lines + 1] = logs[i] end
+		logLabel.Text = table.concat(lines, "\n")
+	end
+end
+
 -- prompts ---------------------------------------------------------
 local function promptPos(prompt)
 	local p = prompt.Parent
@@ -963,7 +980,22 @@ local function pressPrompt(prompt, extraDone)
 
 	local pp = promptPos(prompt)
 	local root = getRoot()
-	if pp and root and (root.Position - pp).Magnitude > math.max(prompt.MaxActivationDistance * 0.7, 4) then
+	local dist = (pp and root) and (root.Position - pp).Magnitude or -1
+	local label = prompt.ActionText ~= "" and prompt.ActionText or prompt.Name
+	logLine(("press '%s' | enabled=%s hold=%.1f max=%.0f dist=%.0f"):format(
+		label, tostring(prompt.Enabled), prompt.HoldDuration, prompt.MaxActivationDistance, dist))
+
+	-- a prompt that is not enabled yet: give it a moment instead of calling it "done"
+	if not prompt.Enabled then
+		local t0 = os.clock()
+		while prompt.Parent and not prompt.Enabled and (os.clock() - t0) < 3 do task.wait(0.2) end
+		if not prompt.Enabled then
+			logLine("  prompt stayed disabled")
+			return false
+		end
+	end
+
+	if pp and root and dist > math.max(prompt.MaxActivationDistance * 0.7, 4) then
 		teleport(pp)
 		task.wait(0.2)
 	end
@@ -975,14 +1007,18 @@ local function pressPrompt(prompt, extraDone)
 		pcall(fireproximityprompt, prompt)
 		pcall(function() prompt.HoldDuration = hold end)
 		task.wait(0.25)
-		if done() then return true end
+		if done() then logLine("  fireproximityprompt -> done") return true end
+		logLine("  fireproximityprompt -> not done yet")
+	else
+		logLine("  this executor has no fireproximityprompt")
 	end
 
 	pcall(function() prompt:InputHoldBegin() end)
 	task.wait(hold + 0.3)
 	pcall(function() prompt:InputHoldEnd() end)
 	task.wait(0.15)
-	if done() then return true end
+	if done() then logLine("  real hold -> done") return true end
+	logLine("  real hold -> not done yet")
 
 	if VIM then
 		local key = prompt.KeyboardKeyCode
@@ -991,15 +1027,33 @@ local function pressPrompt(prompt, extraDone)
 		task.wait(hold + 0.3)
 		pcall(function() VIM:SendKeyEvent(false, key, false, game) end)
 		task.wait(0.15)
+		logLine("  key hold -> done=" .. tostring(done()))
 	end
 	return done()
 end
 
 -- yin & yang lookups ---------------------------------------------
+local function getRitualRoot() return workspace:FindFirstChild("HeadlessRitual") end
+
+local fbCache = {}
 local function getRitualInst(name)
-	local hr = workspace:FindFirstChild("HeadlessRitual")
-	local runtime = hr and hr:FindFirstChild("Runtime")
-	return runtime and runtime:FindFirstChild(name)
+	local hr = getRitualRoot()
+	if not hr then return nil end
+	local runtime = hr:FindFirstChild("Runtime")
+	local inst = runtime and runtime:FindFirstChild(name)
+	if inst then return inst end
+
+	-- fallback: case-insensitive search inside HeadlessRitual (cached, so it stays cheap)
+	local c = fbCache[name]
+	if c and c.inst and c.inst:IsDescendantOf(workspace) then return c.inst end
+	if c and (os.clock() - c.t) < 2 then return nil end
+	local found
+	local lname = name:lower()
+	for _, d in ipairs(hr:GetDescendants()) do
+		if (d:IsA("Model") or d:IsA("BasePart")) and d.Name:lower() == lname then found = d break end
+	end
+	fbCache[name] = { inst = found, t = os.clock() }
+	return found
 end
 
 local function getRitualPos(name)
@@ -1012,16 +1066,70 @@ local function getRitualPos(name)
 	return nil
 end
 
--- Yin AND Yang exist (and their prompts, if any, are enabled)
-local function yyAvailable()
-	for _, name in ipairs({ "Yin", "Yang" }) do
-		local inst = getRitualInst(name)
-		if not inst then return false end
-		local p = inst:FindFirstChildWhichIsA("ProximityPrompt", true)
-		if p and not p.Enabled then return false end
+-- a prompt that is enabled, else the first prompt we can find
+local function firstEnabledPrompt(inst)
+	local first
+	for _, d in ipairs(inst:GetDescendants()) do
+		if d:IsA("ProximityPrompt") then
+			if d.Enabled then return d end
+			first = first or d
+		end
 	end
-	return true
+	return first
 end
+
+-- no prompts at all = fine; prompts exist = at least one must be enabled
+local function hasUsablePrompt(inst)
+	local any = false
+	for _, d in ipairs(inst:GetDescendants()) do
+		if d:IsA("ProximityPrompt") then
+			any = true
+			if d.Enabled then return true end
+		end
+	end
+	return not any
+end
+
+-- any enabled prompt inside HeadlessRitual whose text/names contain `keyword`, nearest first
+local function findPromptInRitual(keyword, nearPos, used)
+	local hr = getRitualRoot()
+	if not hr then return nil end
+	local best, bestDist = nil, math.huge
+	for _, d in ipairs(hr:GetDescendants()) do
+		if d:IsA("ProximityPrompt") and d.Enabled and not (used and used[d])
+			and (not keyword or promptText(d):find(keyword, 1, true)) then
+			local pp = promptPos(d)
+			local dist = (pp and nearPos) and (pp - nearPos).Magnitude or 0
+			if dist < bestDist then best, bestDist = d, dist end
+		end
+	end
+	return best
+end
+
+local availCache = { t = 0, ok = false, why = "checking..." }
+local function yyStatus()
+	if os.clock() - availCache.t < 0.3 then return availCache.ok, availCache.why end
+	local ok, why = true, ""
+	if not getRitualRoot() then
+		ok, why = false, "HeadlessRitual not loaded"
+	else
+		for _, name in ipairs({ "Yin", "Yang" }) do
+			local inst = getRitualInst(name)
+			if not inst then
+				ok, why = false, name .. " missing"
+				break
+			end
+			if not hasUsablePrompt(inst) then
+				ok, why = false, name .. " prompt disabled"
+				break
+			end
+		end
+	end
+	availCache = { t = os.clock(), ok = ok, why = why }
+	return ok, why
+end
+
+local function yyAvailable() return (yyStatus()) end
 
 local function yyReady()
 	return yyOn and os.clock() >= yyNextAllowed and yyAvailable()
@@ -1101,6 +1209,8 @@ end
 local skipUntil = setmetatable({}, { __mode = "k" })
 local setMode -- assigned after the AUTO page is built
 
+local function anyCandy() return selected[1] or selected[2] or selected[3] or selected[4] end
+
 -- one candy per round --------------------------------------------
 local function runCandyRound(alive)
 	local root = getRoot()
@@ -1155,47 +1265,79 @@ end
 
 -- full yin & yang session -----------------------------------------
 local function runYinYang(alive)
+	logLine("=== Yin & Yang session ===")
+	local used = {}
+
 	-- 1 + 2) collect Yin, then Yang
 	for _, name in ipairs({ "Yin", "Yang" }) do
 		if not alive() then return end
 		setStatus("☯ Collecting " .. name .. "...")
 		local pos = getRitualPos(name)
 		if not pos then
+			logLine(name .. " object not found")
 			setStatus(name .. " not found - skipping")
 			sleep(alive, 1)
 		else
+			logLine(("%s at %.0f, %.0f, %.0f"):format(name, pos.X, pos.Y, pos.Z))
 			teleport(pos)
-			sleep(alive, 0.5)
+			sleep(alive, 0.6)
+
 			local inst = getRitualInst(name)
-			local prompt = inst and inst:FindFirstChildWhichIsA("ProximityPrompt", true)
-			prompt = prompt or waitPromptNear(alive, pos, 25, name:lower(), nil, 4)
-			prompt = prompt or waitPromptNear(alive, pos, 15, nil, nil, 2)
+			local how = "inside the model"
+			local prompt = inst and firstEnabledPrompt(inst)
+			if not prompt then
+				how = "by name in HeadlessRitual"
+				prompt = findPromptInRitual(name:lower(), pos, used)
+			end
+			if not prompt then
+				how = "near it, by name"
+				prompt = waitPromptNear(alive, pos, 40, name:lower(), used, 3)
+			end
+			if not prompt then
+				how = "nearest prompt"
+				prompt = waitPromptNear(alive, pos, 25, nil, used, 2)
+			end
+
 			if prompt then
+				logLine(name .. " prompt found " .. how)
+				used[prompt] = true
 				pressPrompt(prompt)
 			else
+				logLine("NO prompt found for " .. name)
 				setStatus("No prompt found for " .. name)
 				sleep(alive, 1)
 			end
 		end
 	end
 
-	-- 3) submit at the seal
+	-- 3) submit at the seal (separate long press for each)
 	if not alive() then return end
 	setStatus("☯ Going to Seal...")
 	teleport(yySealWp)
 	sleep(alive, 0.8)
 
-	local used = {}
 	for _, name in ipairs({ "Yin", "Yang" }) do
 		if not alive() then return end
 		setStatus("☯ Submitting " .. name .. "...")
-		local prompt = waitPromptNear(alive, yySealWp, 45, name:lower(), used, 3)
-			or waitPromptNear(alive, yySealWp, 45, nil, used, 2)
+		local kw = name:lower()
+		local how = "near the seal, by name"
+		local prompt = waitPromptNear(alive, yySealWp, 80, kw, used, 3)
+		if not prompt then
+			how = "nearest prompt at the seal"
+			prompt = waitPromptNear(alive, yySealWp, 80, nil, used, 2)
+		end
+		if not prompt then
+			how = "by name in HeadlessRitual"
+			prompt = findPromptInRitual(kw, yySealWp, used)
+		end
+
 		if prompt then
+			logLine("submit " .. name .. " prompt found " .. how)
 			used[prompt] = true
 			pressPrompt(prompt)
 			sleep(alive, 0.4)
 		else
+			logLine("NO submit prompt found for " .. name)
 			setStatus("No submit prompt found for " .. name)
 			sleep(alive, 1)
 		end
@@ -1203,15 +1345,19 @@ local function runYinYang(alive)
 
 	countdown(alive, SEAL_OPEN_WAIT, "☯ Seal opening... %.1fs")
 
-	-- 4) candy pot
+	-- 4) candy pot inside the seal
 	if not alive() then return end
 	setStatus("☯ Collecting candy pot...")
 	teleport(POT_POS)
 	sleep(alive, 0.6)
-	local pot = waitPromptNear(alive, POT_POS, 25, nil, used, 4)
+	local pot = waitPromptNear(alive, POT_POS, 40, "candy", used, 2)
+		or waitPromptNear(alive, POT_POS, 40, "pot", used, 1)
+		or waitPromptNear(alive, POT_POS, 40, nil, used, 3)
 	if pot then
+		logLine("candy pot prompt found")
 		pressPrompt(pot)
 	else
+		logLine("NO candy pot prompt found")
 		setStatus("Candy pot prompt not found")
 		sleep(alive, 1)
 	end
@@ -1222,6 +1368,7 @@ local function runYinYang(alive)
 	if not alive() then return end
 	setStatus("☯ Going to Checkpoint")
 	teleport(yyCheckpointWp)
+	logLine("=== session done ===")
 	sleep(alive, 0.6)
 end
 
@@ -1232,7 +1379,7 @@ local function mainLoop(alive)
 			setMode("YIN & YANG", ACCENT2)
 			runYinYang(alive)
 			yyNextAllowed = os.clock() + yyCooldown
-		elseif farmOn then
+		elseif farmOn and anyCandy() then
 			setMode("CANDY FARM", WARN)
 			runCandyRound(alive)
 		else
@@ -1272,21 +1419,18 @@ end
 
 local function startAuto()
 	if running then return end
-	if not farmOn and not yyOn then
-		setStatus("⚠ Turn on Candy Farm or Yin & Yang")
+	local farmActive = farmOn and anyCandy()
+	if not farmActive and not yyOn then
+		if farmOn then
+			setStatus("⚠ Pick candy types in FARM, or turn on Yin & Yang")
+			showTab("farm")
+		else
+			setStatus("⚠ Turn on Candy Farm or Yin & Yang")
+		end
 		return
 	end
-	if farmOn then
-		if not (selected[1] or selected[2] or selected[3] or selected[4]) then
-			setStatus("⚠ Pick candy types in the FARM tab")
-			showTab("farm")
-			return
-		end
-		if not farmWaypoint then
-			setStatus("⚠ Set the farm waypoint in the FARM tab")
-			showTab("farm")
-			return
-		end
+	if not farmActive then
+		setStatus("No candy ticked - waiting for Yin & Yang only")
 	end
 	startWorker(mainLoop)
 end
@@ -1301,6 +1445,10 @@ text(hero, { Size = UDim2.fromOffset(120, 14), Position = UDim2.fromOffset(14, 1
 local HeroState = text(hero, {
 	Size = UDim2.new(1, -28, 0, 30), Position = UDim2.fromOffset(14, 24), Text = "IDLE",
 	TextColor3 = SUB, Font = Enum.Font.GothamBlack, TextSize = 24,
+})
+local OnlineLabel = text(hero, {
+	Size = UDim2.fromOffset(150, 14), Position = UDim2.new(1, -164, 0, 10), Text = "👥 --",
+	TextColor3 = SUB, Font = Enum.Font.GothamBold, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Right,
 })
 local AvailPill = make("Frame", {
 	Size = UDim2.new(1, -28, 0, 22), Position = UDim2.fromOffset(14, 56),
@@ -1329,7 +1477,7 @@ local StartBtn = button(ctrl, "▶ START", "success", function() startAuto() end
 local StopBtn = button(ctrl, "⏹ STOP", "danger", function() stopAll() end, { n = 2 })
 
 text(AutoPage, {
-	Size = UDim2.new(1, 0, 0, 48), Text = "Set the farm waypoint + candy types in FARM, then press START. When Yin & Yang appear, the hub switches to them, finishes the ritual, then returns to candy.",
+	Size = UDim2.new(1, 0, 0, 48), Text = "Tick your candy in FARM, then press START. When Yin & Yang appear, the hub switches to them, finishes the ritual, then returns to candy. Yin & Yang also works with no candy ticked.",
 	TextColor3 = SUB, TextSize = 10, TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top, LayoutOrder = nextOrder(),
 })
 
@@ -1355,24 +1503,28 @@ end
 ----------------------------------------------------------------
 -- PAGE: FARM
 ----------------------------------------------------------------
+do
 local FarmPage = pages.farm
 
 section(FarmPage, "WAYPOINT")
 local wpRow = row(FarmPage, 38)
 local SetWp
-SetWp = button(wpRow, "📍 SET WAYPOINT", "glass", function()
+SetWp = button(wpRow, "✔ CHECKPOINT (built-in)", "success", function()
 	local root = getRoot()
 	if root then
 		farmWaypoint = root.Position
-		SetWp.Text = "✔ WAYPOINT SET"
+		SetWp.Text = "✔ MY SPOT SET"
 		applyStyle(SetWp, "success")
-		setStatus("Farm waypoint saved")
+		setStatus("Farm waypoint changed to where you stand")
 	end
 end, { n = 2 })
 button(wpRow, "➡ GO WAYPOINT", "info", function()
-	if not farmWaypoint then setStatus("Set the waypoint first") return end
 	teleport(farmWaypoint)
 end, { n = 2 })
+text(FarmPage, {
+	Size = UDim2.new(1, 0, 0, 26), Text = "The farm returns to the built-in checkpoint (same as Yin & Yang). Tap the left button only to use your own spot.",
+	TextColor3 = SUB, TextSize = 10, TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top, LayoutOrder = nextOrder(),
+})
 
 section(FarmPage, "CANDY TYPES")
 local chipGrid = make("Frame", { Size = UDim2.new(1, 0, 0, 88), BackgroundTransparency = 1, LayoutOrder = nextOrder() }, FarmPage)
@@ -1404,9 +1556,12 @@ end
 toggleRow(FarmPage, "⭐ Priority 04 → 03", "Collect Candy_04, then 03, then the rest", true, function(v) priorityOn = v end)
 sliderRow(FarmPage, "⏱ Go to waypoint every", 1, 30, interval, "s", function(v) interval = v end)
 
+end
+
 ----------------------------------------------------------------
 -- PAGE: RITUAL (Yin & Yang)
 ----------------------------------------------------------------
+do
 local RitualPage = pages.ritual
 
 section(RitualPage, "TELEPORT")
@@ -1459,9 +1614,91 @@ button(RitualPage, "▶ RUN YIN & YANG NOW", "primary", function()
 	end)
 end, { h = 42 })
 
+-- diagnostics -------------------------------------------------------
+local function describePrompt(d, refPos)
+	local pp = promptPos(d)
+	local dist = (pp and refPos) and (pp - refPos).Magnitude or -1
+	return ("%s | %s en=%s hold=%.1f max=%.0f d=%.0f"):format(
+		d.ActionText, d.ObjectText ~= "" and d.ObjectText or d.Name, tostring(d.Enabled),
+		d.HoldDuration, d.MaxActivationDistance, dist)
+end
+
+local function promptsNear(pos, radius)
+	local list = {}
+	for _, d in ipairs(workspace:GetDescendants()) do
+		if d:IsA("ProximityPrompt") then
+			local pp = promptPos(d)
+			if pp then
+				local dist = (pp - pos).Magnitude
+				if dist <= radius then table.insert(list, { d = d, dist = dist }) end
+			end
+		end
+	end
+	table.sort(list, function(a, b) return a.dist < b.dist end)
+	return list
+end
+
+local function scanRitual()
+	logLine("--- SCAN ---")
+	local hr = getRitualRoot()
+	logLine("HeadlessRitual: " .. (hr and "found" or "NOT loaded (too far away / not streamed in)"))
+	local rt = hr and hr:FindFirstChild("Runtime")
+	if rt then
+		local names = {}
+		for _, c in ipairs(rt:GetChildren()) do names[#names + 1] = c.Name end
+		logLine("Runtime: " .. (#names > 0 and table.concat(names, ", ") or "(empty)"))
+	elseif hr then
+		logLine("Runtime: missing")
+	end
+	for _, name in ipairs({ "Yin", "Yang" }) do
+		local inst = getRitualInst(name)
+		if inst then
+			local pos = getRitualPos(name)
+			logLine(("%s: %s at %s"):format(name, inst.ClassName,
+				pos and ("%.0f, %.0f, %.0f"):format(pos.X, pos.Y, pos.Z) or "?"))
+			for _, d in ipairs(inst:GetDescendants()) do
+				if d:IsA("ProximityPrompt") then logLine("  prompt " .. describePrompt(d, pos)) end
+			end
+		else
+			logLine(name .. ": missing")
+		end
+	end
+	availCache.t = 0
+	local ok, why = yyStatus()
+	logLine("Available: " .. tostring(ok) .. (ok and "" or (" (" .. why .. ")")))
+	for _, spot in ipairs({ { "Seal", yySealWp }, { "Pot", POT_POS } }) do
+		local list = promptsNear(spot[2], 80)
+		logLine(("Prompts near %s: %d"):format(spot[1], #list))
+		for i = 1, math.min(#list, 4) do logLine("  " .. describePrompt(list[i].d, spot[2])) end
+	end
+	setStatus("Scan done - see the log in RITUAL")
+end
+
+section(RitualPage, "DIAGNOSTICS")
+local logCard = glass(RitualPage, 124)
+logLabel = text(logCard, {
+	Size = UDim2.new(1, -16, 1, -12), Position = UDim2.fromOffset(8, 6), Text = "Press SCAN to inspect Yin & Yang.",
+	TextColor3 = SUB, Font = Enum.Font.Code, TextSize = 9, TextWrapped = true,
+	TextYAlignment = Enum.TextYAlignment.Top, TextTruncate = Enum.TextTruncate.AtEnd,
+})
+local diagRow = row(RitualPage, 38)
+button(diagRow, "🔍 SCAN", "info", function() scanRitual() end, { n = 2 })
+button(diagRow, "📋 COPY LOG", "glass", function()
+	if #logs == 0 then setStatus("Log is empty") return end
+	if setclipboard then
+		pcall(setclipboard, table.concat(logs, "\n"))
+		setStatus("📋 Log copied")
+	else
+		setStatus("Copy not supported by this executor")
+	end
+end, { n = 2 })
+
+end
+
 ----------------------------------------------------------------
 -- PAGE: SAVER
 ----------------------------------------------------------------
+do
 local SaverPage = pages.saver
 
 sw.master = toggleRow(SaverPage, "🔋 Ultra Saver", "Everything below, in one switch", false, function(v) setSaver(v) end)
@@ -1492,6 +1729,8 @@ text(SaverPage, {
 	TextColor3 = SUB, TextSize = 10, TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top, LayoutOrder = nextOrder(),
 })
 
+end
+
 ----------------------------------------------------------------
 -- WINDOW BEHAVIOUR
 ----------------------------------------------------------------
@@ -1510,7 +1749,77 @@ local function setMinimized(v)
 end
 MinBtn.MouseButton1Click:Connect(function() setMinimized(not minimized) end)
 
+-- online counter ----------------------------------------------------
+local HttpService = game:GetService("HttpService")
+local SESSION_ID = (HttpService:GenerateGUID(false):gsub("-", "")) -- random, not linked to your account
+local presenceBase = nil
+if PRESENCE_URL ~= "" then presenceBase = (PRESENCE_URL:gsub("/+$", "")) end
+
+local function httpReq(method, url, body)
+	local f = request or http_request or (syn and syn.request) or (http and http.request)
+	if not f then return nil end
+	local ok, res = pcall(f, {
+		Url = url, Method = method, Headers = { ["Content-Type"] = "application/json" }, Body = body,
+	})
+	if ok and res and (res.StatusCode or 200) < 300 then return res.Body or "" end
+	return nil
+end
+
+local function setOnline(n)
+	if n then
+		OnlineLabel.Text = ("👥 %d online"):format(n)
+		OnlineLabel.TextColor3 = GOOD
+	elseif not presenceBase then
+		OnlineLabel.Text = "👥 counter not set up"
+		OnlineLabel.TextColor3 = SUB
+	else
+		OnlineLabel.Text = "👥 offline"
+		OnlineLabel.TextColor3 = WARN
+	end
+end
+
+local function presenceTick()
+	if not presenceBase then return end
+	httpReq("PUT", presenceBase .. "/janrepublic_online/" .. SESSION_ID .. ".json", [[{"t":{".sv":"timestamp"}}]])
+	local body = httpReq("GET", presenceBase .. "/janrepublic_online.json")
+	if not body or body == "" or body == "null" then setOnline(nil) return end
+	local ok, data = pcall(function() return HttpService:JSONDecode(body) end)
+	if not ok or type(data) ~= "table" then setOnline(nil) return end
+
+	local mine = data[SESSION_ID]
+	local now = type(mine) == "table" and mine.t
+	if not now then setOnline(nil) return end
+
+	local count, removed = 0, 0
+	for id, v in pairs(data) do
+		local t = type(v) == "table" and v.t
+		if t then
+			if now - t <= 90000 then
+				count += 1
+			elseif now - t > 600000 and removed < 5 then
+				removed += 1
+				httpReq("DELETE", presenceBase .. "/janrepublic_online/" .. id .. ".json")
+			end
+		end
+	end
+	setOnline(count)
+end
+
+setOnline(nil)
+task.spawn(function()
+	while Gui.Parent do
+		pcall(presenceTick)
+		for _ = 1, 30 do
+			if not Gui.Parent then break end
+			task.wait(1)
+		end
+	end
+end)
+
 CloseBtn.MouseButton1Click:Connect(function()
+	if presenceBase then
+		task.spawn(httpReq, "DELETE", presenceBase .. "/janrepublic_online/" .. SESSION_ID .. ".json")
+	end
 	stopAll()
 	if SAVER_ON or BLACK_SCREEN or lowGfxApplied then setSaver(false) end
 	stopFx()
@@ -1535,8 +1844,8 @@ task.spawn(function()
 				PosLabel.Text = "X --   Y --   Z --"
 			end
 
-			local ready = yyAvailable()
-			AvailText.Text = ready and "☯ Yin & Yang: AVAILABLE" or "☯ Yin & Yang: not available"
+			local ready, why = yyStatus()
+			AvailText.Text = ready and "☯ Yin & Yang: AVAILABLE" or ("☯ Yin & Yang: " .. why)
 			tween(AvailText, 0.2, { TextColor3 = ready and GOOD or SUB })
 			tween(AvailDot, 0.2, { BackgroundColor3 = ready and GOOD or SUB })
 		end
