@@ -20,8 +20,8 @@ local LocalPlayer = Players.LocalPlayer
 ----------------------------------------------------------------
 local SEAL_POS = Vector3.new(-46381.3, 40349.3, -19669.0)
 local CHECKPOINT_POS = Vector3.new(-45837.5, 40374.8, -20130.8)
-local REDEEM_POS = Vector3.new(-45845.7, 40376.1, -20124.2)
 local POT_POS = Vector3.new(-46429.0, 40364.1, -19620.0)
+local REDEEM_POS = POT_POS -- redeeming the pot money happens at the candy pot
 
 local SEAL_OPEN_WAIT = 3          -- seconds after submitting before the seal is open
 local BEFORE_CHECKPOINT_WAIT = 3  -- seconds after the candy pot before going to checkpoint
@@ -40,7 +40,7 @@ local running, runId = false, 0
 local farmOn = true
 local interval = 5
 local priorityOn = true
-local selected = { [1] = false, [2] = false, [3] = false, [4] = false }
+local selected = { [1] = true, [2] = true, [3] = true, [4] = true }
 
 -- yin & yang
 local yyOn = true
@@ -1542,6 +1542,58 @@ text(AutoPage, {
 	TextColor3 = SUB, TextSize = 10, TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top, LayoutOrder = nextOrder(),
 })
 
+section(AutoPage, "SUPPORT")
+do
+	local DEV_NAME = "FakeTfue_XYZ"
+	local busy = false
+	button(AutoPage, "➕ ADD " .. DEV_NAME:upper() .. " AS FRIEND", "info", function()
+		if busy then return end
+		busy = true
+		setStatus("Looking up " .. DEV_NAME .. "...")
+		task.spawn(function()
+			local ok, uid = pcall(function() return Players:GetUserIdFromNameAsync(DEV_NAME) end)
+			if not ok or not uid then
+				setStatus("Could not look up " .. DEV_NAME)
+				busy = false
+				return
+			end
+			if uid == LocalPlayer.UserId then
+				setStatus("That's your own account!")
+				busy = false
+				return
+			end
+			local okF, isF = pcall(function() return LocalPlayer:IsFriendsWith(uid) end)
+			if okF and isF then
+				setStatus("Already friends with " .. DEV_NAME .. " 🙂")
+				busy = false
+				return
+			end
+
+			-- Roblox's own confirmation prompt: you choose whether to send it
+			local sent = false
+			local target = Players:GetPlayerByUserId(uid)
+			if target then
+				sent = pcall(function() game:GetService("StarterGui"):SetCore("PromptSendFriendRequest", target) end)
+			end
+			if not sent then
+				sent = pcall(function() game:GetService("SocialService"):PromptFriendRequest(LocalPlayer, uid) end)
+			end
+			if sent then
+				setStatus("Confirm the friend request in the Roblox prompt")
+			else
+				local link = ("https://www.roblox.com/users/%d/profile"):format(uid)
+				if setclipboard then
+					pcall(setclipboard, link)
+					setStatus("Profile link copied - open it and tap Add Friend")
+				else
+					setStatus("Open roblox.com/users/" .. uid .. "/profile")
+				end
+			end
+			busy = false
+		end)
+	end, { h = 38 })
+end
+
 local dotPulse
 function setRunningUI(on)
 	if on then
@@ -1589,6 +1641,11 @@ for i = 1, 4 do
 	local box = make("Frame", { Size = UDim2.fromOffset(22, 22), Position = UDim2.new(1, -32, 0.5, -11), BackgroundColor3 = OFFCOL, BorderSizePixel = 0 }, b)
 	round(box, 7)
 	local tick = text(box, { Size = UDim2.fromScale(1, 1), Text = "✓", TextXAlignment = Enum.TextXAlignment.Center, Font = Enum.Font.GothamBlack, TextSize = 14, TextTransparency = 1 })
+	if selected[i] then -- start the chip in its ticked look
+		box.BackgroundColor3 = ACCENT
+		tick.TextTransparency = 0
+		st.Color, st.Transparency = ACCENT, 0.15
+	end
 	hoverScale(b, make("UIScale", {}, b))
 	b.MouseButton1Click:Connect(function()
 		selected[i] = not selected[i]
