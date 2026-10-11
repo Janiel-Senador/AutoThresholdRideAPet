@@ -38,7 +38,7 @@ local running, runId = false, 0
 
 -- candy farm
 local farmOn = true
-local interval = 4
+local interval = 5
 local priorityOn = true
 local selected = { [1] = false, [2] = false, [3] = false, [4] = false }
 
@@ -240,7 +240,7 @@ text(Header, {
 })
 local HeaderSub = text(Header, {
 	Size = UDim2.new(1, -170, 0, 14), Position = UDim2.fromOffset(56, 28),
-	Text = "AUTO HUB  •  👥 connecting...", TextColor3 = SUB, Font = Enum.Font.GothamBold, TextSize = 10,
+	Text = "👥 connecting...", TextColor3 = SUB, Font = Enum.Font.GothamBold, TextSize = 11,
 })
 
 local Dot = make("Frame", {
@@ -912,7 +912,7 @@ local logs = {}
 local logLabel
 local function logLine(msg)
 	table.insert(logs, ("[%s] %s"):format(os.date("%H:%M:%S"), msg))
-	if #logs > 80 then table.remove(logs, 1) end
+	if #logs > 250 then table.remove(logs, 1) end
 	if logLabel then
 		local lines = {}
 		for i = math.max(1, #logs - 8), #logs do lines[#lines + 1] = logs[i] end
@@ -974,14 +974,15 @@ local function promptDone(prompt)
 end
 
 -- long press: fireproximityprompt -> real hold -> key hold, stops once used up
-local function pressPrompt(prompt, extraDone)
+local function pressPrompt(prompt, extraDone, quiet)
+	local function plog(m) if not quiet then logLine(m) end end
 	local function done() return promptDone(prompt) or (extraDone and extraDone()) end
 
 	local pp = promptPos(prompt)
 	local root = getRoot()
 	local dist = (pp and root) and (root.Position - pp).Magnitude or -1
 	local label = prompt.ActionText ~= "" and prompt.ActionText or prompt.Name
-	logLine(("press '%s' | enabled=%s hold=%.1f max=%.0f dist=%.0f"):format(
+	plog(("press '%s' | enabled=%s hold=%.1f max=%.0f dist=%.0f"):format(
 		label, tostring(prompt.Enabled), prompt.HoldDuration, prompt.MaxActivationDistance, dist))
 
 	-- a prompt that is not enabled yet: give it a moment instead of calling it "done"
@@ -989,7 +990,7 @@ local function pressPrompt(prompt, extraDone)
 		local t0 = os.clock()
 		while prompt.Parent and not prompt.Enabled and (os.clock() - t0) < 3 do task.wait(0.2) end
 		if not prompt.Enabled then
-			logLine("  prompt stayed disabled")
+			plog("  prompt stayed disabled")
 			return false
 		end
 	end
@@ -1006,18 +1007,18 @@ local function pressPrompt(prompt, extraDone)
 		pcall(fireproximityprompt, prompt)
 		pcall(function() prompt.HoldDuration = hold end)
 		task.wait(0.25)
-		if done() then logLine("  fireproximityprompt -> done") return true end
-		logLine("  fireproximityprompt -> not done yet")
+		if done() then plog("  fireproximityprompt -> done") return true end
+		plog("  fireproximityprompt -> not done yet")
 	else
-		logLine("  this executor has no fireproximityprompt")
+		plog("  this executor has no fireproximityprompt")
 	end
 
 	pcall(function() prompt:InputHoldBegin() end)
 	task.wait(hold + 0.3)
 	pcall(function() prompt:InputHoldEnd() end)
 	task.wait(0.15)
-	if done() then logLine("  real hold -> done") return true end
-	logLine("  real hold -> not done yet")
+	if done() then plog("  real hold -> done") return true end
+	plog("  real hold -> not done yet")
 
 	if VIM then
 		local key = prompt.KeyboardKeyCode
@@ -1026,7 +1027,7 @@ local function pressPrompt(prompt, extraDone)
 		task.wait(hold + 0.3)
 		pcall(function() VIM:SendKeyEvent(false, key, false, game) end)
 		task.wait(0.15)
-		logLine("  key hold -> done=" .. tostring(done()))
+		plog("  key hold -> done=" .. tostring(done()))
 	end
 	return done()
 end
@@ -1195,7 +1196,7 @@ local function collectCandy(c)
 	local remote = getRemote()
 	setStatus(("Pickup %s | prompt:%s remote:%s"):format(c.name, prompt and "yes" or "NO", remote and "yes" or "NO"))
 	if prompt then
-		pressPrompt(prompt, function() return isGone(c) end)
+		pressPrompt(prompt, function() return isGone(c) end, true)
 		if isGone(c) then return true end
 	end
 	if remote then
@@ -1207,6 +1208,58 @@ end
 
 local skipUntil = setmetatable({}, { __mode = "k" })
 local setMode -- assigned after the AUTO page is built
+
+local function isCandyPrompt(prompt)
+	local p = prompt.Parent
+	for _ = 1, 3 do
+		if not p or p == workspace then break end
+		if p.Name:match("^Candy%d+_%d+$") or p.Name:match("^Candy_0*%d+$") then return true end
+		p = p.Parent
+	end
+	return false
+end
+
+-- nearest enabled prompt around `origin` (candy prompts excluded). A prompt whose text/names contain
+-- `keyword` wins over a nearer one that doesn't; otherwise the nearest one is used.
+local function findPromptWide(origin, radius, keyword, used, skip)
+	local bestKw, bestKwD, bestAny, bestAnyD = nil, radius, nil, radius
+	for _, d in ipairs(workspace:GetDescendants()) do
+		if d:IsA("ProximityPrompt") and d.Enabled and not (used and used[d])
+			and not isCandyPrompt(d) and not (skip and skip(d)) then
+			local pp = promptPos(d)
+			if pp then
+				local dist = (pp - origin).Magnitude
+				if dist < bestAnyD then bestAny, bestAnyD = d, dist end
+				if keyword and dist < bestKwD and promptText(d):find(keyword, 1, true) then
+					bestKw, bestKwD = d, dist
+				end
+			end
+		end
+	end
+	return bestKw or bestAny
+end
+
+-- log every prompt around a point (enabled or not) so we can see what the game really has there
+local function dumpPrompts(label, origin, radius)
+	local list = {}
+	for _, d in ipairs(workspace:GetDescendants()) do
+		if d:IsA("ProximityPrompt") then
+			local pp = promptPos(d)
+			if pp then
+				local dist = (pp - origin).Magnitude
+				if dist <= radius then list[#list + 1] = { d = d, dist = dist } end
+			end
+		end
+	end
+	table.sort(list, function(a, b) return a.dist < b.dist end)
+	logLine(("%s: %d prompts within %d studs"):format(label, #list, radius))
+	for i = 1, math.min(#list, 6) do
+		local d = list[i].d
+		local full = d:GetFullName()
+		if #full > 64 then full = "..." .. full:sub(-61) end
+		logLine(("  %s | '%s' en=%s d=%.0f"):format(full, d.ActionText, tostring(d.Enabled), list[i].dist))
+	end
+end
 
 local function anyCandy() return selected[1] or selected[2] or selected[3] or selected[4] end
 
@@ -1267,7 +1320,7 @@ local function runYinYang(alive)
 	logLine("=== Yin & Yang session ===")
 	local used = {}
 
-	-- 1 + 2) collect Yin, then Yang
+	-- 1 + 2) collect Yin, then Yang (the object may move, so we follow it while searching)
 	for _, name in ipairs({ "Yin", "Yang" }) do
 		if not alive() then return end
 		setStatus("☯ Collecting " .. name .. "...")
@@ -1285,25 +1338,28 @@ local function runYinYang(alive)
 			local how = "inside the model"
 			local prompt = inst and firstEnabledPrompt(inst)
 			if not prompt then
-				how = "by name in HeadlessRitual"
-				prompt = findPromptInRitual(name:lower(), pos, used)
-			end
-			if not prompt then
-				how = "near it, by name"
-				prompt = waitPromptNear(alive, pos, 40, name:lower(), used, 3)
-			end
-			if not prompt then
-				how = "nearest prompt"
-				prompt = waitPromptNear(alive, pos, 25, nil, used, 2)
+				how = "near it"
+				local t0 = os.clock()
+				while alive() and not prompt and (os.clock() - t0) < 7 do
+					local cur = getRitualPos(name) or pos
+					local root = getRoot()
+					if root and (root.Position - cur).Magnitude > 12 then
+						teleport(cur)
+						sleep(alive, 0.3)
+					end
+					prompt = findPromptWide(cur, 120, name:lower(), used)
+					if not prompt then task.wait(0.4) end
+				end
 			end
 
 			if prompt then
-				logLine(name .. " prompt found " .. how)
+				logLine(("%s prompt found %s: %s"):format(name, how, prompt:GetFullName():sub(-50)))
 				used[prompt] = true
 				pressPrompt(prompt)
 			else
 				logLine("NO prompt found for " .. name)
 				setStatus("No prompt found for " .. name)
+				dumpPrompts(name, getRitualPos(name) or pos, 150)
 				sleep(alive, 1)
 			end
 		end
@@ -1315,29 +1371,31 @@ local function runYinYang(alive)
 	teleport(yySealWp)
 	sleep(alive, 0.8)
 
+	local function skipPot(p)
+		local pp = promptPos(p)
+		return pp and (pp - POT_POS).Magnitude < 8
+	end
+
 	for _, name in ipairs({ "Yin", "Yang" }) do
 		if not alive() then return end
 		setStatus("☯ Submitting " .. name .. "...")
 		local kw = name:lower()
-		local how = "near the seal, by name"
-		local prompt = waitPromptNear(alive, yySealWp, 80, kw, used, 3)
-		if not prompt then
-			how = "nearest prompt at the seal"
-			prompt = waitPromptNear(alive, yySealWp, 80, nil, used, 2)
-		end
-		if not prompt then
-			how = "by name in HeadlessRitual"
-			prompt = findPromptInRitual(kw, yySealWp, used)
+		local prompt
+		local t0 = os.clock()
+		while alive() and not prompt and (os.clock() - t0) < 7 do
+			prompt = findPromptWide(yySealWp, 120, kw, used, skipPot)
+			if not prompt then task.wait(0.4) end
 		end
 
 		if prompt then
-			logLine("submit " .. name .. " prompt found " .. how)
+			logLine(("submit %s prompt found: %s"):format(name, prompt:GetFullName():sub(-50)))
 			used[prompt] = true
 			pressPrompt(prompt)
 			sleep(alive, 0.4)
 		else
 			logLine("NO submit prompt found for " .. name)
 			setStatus("No submit prompt found for " .. name)
+			dumpPrompts("Seal (" .. name .. ")", yySealWp, 150)
 			sleep(alive, 1)
 		end
 	end
@@ -1349,15 +1407,19 @@ local function runYinYang(alive)
 	setStatus("☯ Collecting candy pot...")
 	teleport(POT_POS)
 	sleep(alive, 0.6)
-	local pot = waitPromptNear(alive, POT_POS, 40, "candy", used, 2)
-		or waitPromptNear(alive, POT_POS, 40, "pot", used, 1)
-		or waitPromptNear(alive, POT_POS, 40, nil, used, 3)
+	local pot
+	local t0 = os.clock()
+	while alive() and not pot and (os.clock() - t0) < 7 do
+		pot = findPromptWide(POT_POS, 60, "pot", used)
+		if not pot then task.wait(0.4) end
+	end
 	if pot then
-		logLine("candy pot prompt found")
+		logLine("candy pot prompt found: " .. pot:GetFullName():sub(-50))
 		pressPrompt(pot)
 	else
 		logLine("NO candy pot prompt found")
 		setStatus("Candy pot prompt not found")
+		dumpPrompts("Pot", POT_POS, 100)
 		sleep(alive, 1)
 	end
 
@@ -1446,7 +1508,7 @@ local HeroState = text(hero, {
 	TextColor3 = SUB, Font = Enum.Font.GothamBlack, TextSize = 24,
 })
 local OnlineLabel = text(hero, {
-	Size = UDim2.fromOffset(170, 16), Position = UDim2.new(1, -184, 0, 9), Text = "👥 connecting...",
+	Size = UDim2.fromOffset(200, 16), Position = UDim2.new(1, -214, 0, 9), Text = "👥 connecting...",
 	TextColor3 = SUB, Font = Enum.Font.GothamBlack, TextSize = 12, TextXAlignment = Enum.TextXAlignment.Right,
 })
 local AvailPill = make("Frame", {
@@ -1651,6 +1713,31 @@ logLabel = text(logCard, {
 })
 local diagRow = row(RitualPage, 38)
 button(diagRow, "🔍 SCAN", "info", function() scanRitual() end, { n = 2 })
+local learnOn = false
+local learnBtn
+learnBtn = button(RitualPage, "🎯 LEARN MODE: OFF", "glass", function()
+	learnOn = not learnOn
+	learnBtn.Text = "🎯 LEARN MODE: " .. (learnOn and "ON - do it by hand" or "OFF")
+	applyStyle(learnBtn, learnOn and "primary" or "glass")
+	logLine(learnOn and "LEARN mode ON - press the prompts by hand" or "LEARN mode OFF")
+end, { h = 36 })
+
+do
+	local PPS = game:GetService("ProximityPromptService")
+	local function learn(tag, prompt)
+		if not learnOn then return end
+		local pp = promptPos(prompt)
+		local full = prompt:GetFullName()
+		if #full > 70 then full = "..." .. full:sub(-67) end
+		logLine(("LEARN %s: %s"):format(tag, full))
+		logLine(("  action='%s' object='%s' hold=%.1f max=%.0f at %s"):format(
+			prompt.ActionText, prompt.ObjectText, prompt.HoldDuration, prompt.MaxActivationDistance,
+			pp and ("%.0f, %.0f, %.0f"):format(pp.X, pp.Y, pp.Z) or "?"))
+	end
+	PPS.PromptButtonHoldBegan:Connect(function(prompt) learn("hold", prompt) end)
+	PPS.PromptTriggered:Connect(function(prompt) learn("triggered", prompt) end)
+end
+
 button(diagRow, "📋 COPY LOG", "glass", function()
 	if #logs == 0 then setStatus("Log is empty") return end
 	if setclipboard then
@@ -1721,9 +1808,22 @@ MinBtn.MouseButton1Click:Connect(function() setMinimized(not minimized) end)
 local PresenceStop
 do
 	local HttpService = game:GetService("HttpService")
-	local SESSION_ID = (HttpService:GenerateGUID(false):gsub("-", "")) -- random, not linked to your account
 	local presenceBase = nil
 	if PRESENCE_URL ~= "" then presenceBase = (PRESENCE_URL:gsub("/+$", "")) end
+
+	-- a random ID saved on your device (not linked to your Roblox account) so each device counts once
+	local USER_ID
+	pcall(function()
+		if isfile and readfile and writefile then
+			if isfile("janrepublic_id.txt") then USER_ID = readfile("janrepublic_id.txt") end
+			if USER_ID then USER_ID = (USER_ID:gsub("%s", "")) end
+			if not USER_ID or #USER_ID < 8 then
+				USER_ID = (HttpService:GenerateGUID(false):gsub("-", ""))
+				writefile("janrepublic_id.txt", USER_ID)
+			end
+		end
+	end)
+	if not USER_ID or #USER_ID < 8 then USER_ID = (HttpService:GenerateGUID(false):gsub("-", "")) end
 
 	local lastIssue = ""
 	local function httpReq(method, url, body)
@@ -1751,10 +1851,11 @@ do
 
 	local connecting = true
 	local lastReason = nil
-	local function setOnline(n, reason)
+	local function setOnline(n, reason, total)
 		local txt, col
 		if n then
 			txt, col = ("👥 %d online"):format(n), GOOD
+			if total then txt = txt .. (" • %d total"):format(total) end
 		elseif not presenceBase then
 			txt, col = "👥 not set up", SUB
 		elseif connecting then
@@ -1763,7 +1864,7 @@ do
 			txt, col = "👥 offline", WARN
 		end
 		OnlineLabel.Text, OnlineLabel.TextColor3 = txt, col
-		HeaderSub.Text, HeaderSub.TextColor3 = "AUTO HUB  •  " .. txt, (n and GOOD) or SUB
+		HeaderSub.Text, HeaderSub.TextColor3 = txt, (n and GOOD) or SUB
 		if reason and reason ~= lastReason then
 			lastReason = reason
 			logLine("online counter: " .. reason)
@@ -1771,9 +1872,13 @@ do
 		end
 	end
 
+	local registered = false
 	local function presenceTick()
 		if not presenceBase then return end
-		local put = httpReq("PUT", presenceBase .. "/janrepublic_online/" .. SESSION_ID .. ".json", [[{"t":{".sv":"timestamp"}}]])
+		local stamp = [[{"t":{".sv":"timestamp"}}]]
+
+		-- 1) heartbeat + count who is online right now
+		local put = httpReq("PUT", presenceBase .. "/janrepublic_online/" .. USER_ID .. ".json", stamp)
 		if not put then setOnline(nil, lastIssue) return end
 		local body = httpReq("GET", presenceBase .. "/janrepublic_online.json")
 		if not body then setOnline(nil, lastIssue) return end
@@ -1781,7 +1886,7 @@ do
 		local ok, data = pcall(function() return HttpService:JSONDecode(body) end)
 		if not ok or type(data) ~= "table" then setOnline(nil, "unreadable answer from the database") return end
 
-		local mine = data[SESSION_ID]
+		local mine = data[USER_ID]
 		local now = type(mine) == "table" and mine.t
 		if not now then setOnline(nil, "database did not return our entry") return end
 
@@ -1797,14 +1902,35 @@ do
 				end
 			end
 		end
+
+		-- 2) total unique users (everyone who ever ran the script)
+		if not registered then
+			if httpReq("PUT", presenceBase .. "/janrepublic_users/" .. USER_ID .. ".json", stamp) then
+				registered = true
+			end
+		end
+		local total
+		local ub = httpReq("GET", presenceBase .. "/janrepublic_users.json?shallow=true")
+		if ub then
+			if ub == "" or ub == "null" then
+				total = 0
+			else
+				local ok2, d2 = pcall(function() return HttpService:JSONDecode(ub) end)
+				if ok2 and type(d2) == "table" then
+					total = 0
+					for _ in pairs(d2) do total += 1 end
+				end
+			end
+		end
+
 		connecting = false
 		lastReason = nil
-		setOnline(count)
+		setOnline(count, (not total) and ("total counter: " .. lastIssue .. " (janrepublic_users)") or nil, total)
 	end
 
 	PresenceStop = function()
 		if presenceBase then
-			task.spawn(httpReq, "DELETE", presenceBase .. "/janrepublic_online/" .. SESSION_ID .. ".json")
+			task.spawn(httpReq, "DELETE", presenceBase .. "/janrepublic_online/" .. USER_ID .. ".json")
 		end
 	end
 
@@ -1813,7 +1939,6 @@ do
 		while Gui.Parent do
 			local ok = pcall(presenceTick)
 			if connecting and presenceBase then
-				-- after the first attempt stop saying "connecting" even if it failed
 				connecting = false
 				if not ok then setOnline(nil, "counter error") end
 			end
