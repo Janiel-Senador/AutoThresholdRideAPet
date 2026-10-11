@@ -38,7 +38,6 @@ local running, runId = false, 0
 
 -- candy farm
 local farmOn = true
-local farmWaypoint = CHECKPOINT_POS -- built in: the candy farm uses the same checkpoint
 local interval = 4
 local priorityOn = true
 local selected = { [1] = false, [2] = false, [3] = false, [4] = false }
@@ -239,9 +238,9 @@ text(Header, {
 	Size = UDim2.new(1, -170, 0, 20), Position = UDim2.fromOffset(56, 8),
 	Text = "JAN REPUBLIC", Font = Enum.Font.GothamBlack, TextSize = 16,
 })
-text(Header, {
+local HeaderSub = text(Header, {
 	Size = UDim2.new(1, -170, 0, 14), Position = UDim2.fromOffset(56, 28),
-	Text = "AUTO HUB  •  GLASS EDITION", TextColor3 = SUB, Font = Enum.Font.GothamBold, TextSize = 9,
+	Text = "AUTO HUB  •  👥 connecting...", TextColor3 = SUB, Font = Enum.Font.GothamBold, TextSize = 10,
 })
 
 local Dot = make("Frame", {
@@ -1256,9 +1255,9 @@ local function runCandyRound(alive)
 		task.wait(0.1)
 	end
 
-	if alive() and farmWaypoint then
-		setStatus("Timer met - at waypoint")
-		teleport(farmWaypoint)
+	if alive() then
+		setStatus("Timer met - at checkpoint")
+		teleport(yyCheckpointWp)
 		sleep(alive, WAYPOINT_REST)
 	end
 end
@@ -1447,8 +1446,8 @@ local HeroState = text(hero, {
 	TextColor3 = SUB, Font = Enum.Font.GothamBlack, TextSize = 24,
 })
 local OnlineLabel = text(hero, {
-	Size = UDim2.fromOffset(150, 14), Position = UDim2.new(1, -164, 0, 10), Text = "👥 --",
-	TextColor3 = SUB, Font = Enum.Font.GothamBold, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Right,
+	Size = UDim2.fromOffset(170, 16), Position = UDim2.new(1, -184, 0, 9), Text = "👥 connecting...",
+	TextColor3 = SUB, Font = Enum.Font.GothamBlack, TextSize = 12, TextXAlignment = Enum.TextXAlignment.Right,
 })
 local AvailPill = make("Frame", {
 	Size = UDim2.new(1, -28, 0, 22), Position = UDim2.fromOffset(14, 56),
@@ -1506,23 +1505,8 @@ end
 do
 local FarmPage = pages.farm
 
-section(FarmPage, "WAYPOINT")
-local wpRow = row(FarmPage, 38)
-local SetWp
-SetWp = button(wpRow, "✔ CHECKPOINT (built-in)", "success", function()
-	local root = getRoot()
-	if root then
-		farmWaypoint = root.Position
-		SetWp.Text = "✔ MY SPOT SET"
-		applyStyle(SetWp, "success")
-		setStatus("Farm waypoint changed to where you stand")
-	end
-end, { n = 2 })
-button(wpRow, "➡ GO WAYPOINT", "info", function()
-	teleport(farmWaypoint)
-end, { n = 2 })
 text(FarmPage, {
-	Size = UDim2.new(1, 0, 0, 26), Text = "The farm returns to the built-in checkpoint (same as Yin & Yang). Tap the left button only to use your own spot.",
+	Size = UDim2.new(1, 0, 0, 26), Text = "The farm goes to the Yin & Yang checkpoint every time the timer is met. Nothing to set.",
 	TextColor3 = SUB, TextSize = 10, TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top, LayoutOrder = nextOrder(),
 })
 
@@ -1554,7 +1538,7 @@ for i = 1, 4 do
 end
 
 toggleRow(FarmPage, "⭐ Priority 04 → 03", "Collect Candy_04, then 03, then the rest", true, function(v) priorityOn = v end)
-sliderRow(FarmPage, "⏱ Go to waypoint every", 1, 30, interval, "s", function(v) interval = v end)
+sliderRow(FarmPage, "⏱ Go to checkpoint every", 1, 30, interval, "s", function(v) interval = v end)
 
 end
 
@@ -1574,30 +1558,14 @@ end
 button(tpRow, "☯ YIN", "dark", function() goRitual("Yin") end, { n = 2 })
 button(tpRow, "☯ YANG", "light", function() goRitual("Yang") end, { n = 2 })
 
-section(RitualPage, "WAYPOINTS")
-local sealRow = row(RitualPage, 38)
-local SetSeal
-SetSeal = button(sealRow, "📍 SET SEAL", "glass", function()
-	local root = getRoot()
-	if root then
-		yySealWp = root.Position
-		SetSeal.Text = "✔ SEAL SET"
-		setStatus("Seal position changed to where you stand")
-	end
+section(RitualPage, "GO TO")
+local goRow = row(RitualPage, 38)
+button(goRow, "➡ SEAL", "info", function()
+	if teleport(yySealWp) then setStatus("Teleported to Seal") end
 end, { n = 2 })
-button(sealRow, "➡ GO SEAL", "info", function() teleport(yySealWp) end, { n = 2 })
-
-local cpRow = row(RitualPage, 38)
-local SetCp
-SetCp = button(cpRow, "📍 SET CHECKPOINT", "glass", function()
-	local root = getRoot()
-	if root then
-		yyCheckpointWp = root.Position
-		SetCp.Text = "✔ CHECKPOINT SET"
-		setStatus("Checkpoint changed to where you stand")
-	end
+button(goRow, "➡ CHECKPOINT", "info", function()
+	if teleport(yyCheckpointWp) then setStatus("Teleported to Checkpoint") end
 end, { n = 2 })
-button(cpRow, "➡ GO CHECKPOINT", "info", function() teleport(yyCheckpointWp) end, { n = 2 })
 
 button(RitualPage, "➡ GO REDEEM", "info", function()
 	if teleport(REDEEM_POS) then setStatus("Teleported to Redeem") end
@@ -1750,76 +1718,115 @@ end
 MinBtn.MouseButton1Click:Connect(function() setMinimized(not minimized) end)
 
 -- online counter ----------------------------------------------------
-local HttpService = game:GetService("HttpService")
-local SESSION_ID = (HttpService:GenerateGUID(false):gsub("-", "")) -- random, not linked to your account
-local presenceBase = nil
-if PRESENCE_URL ~= "" then presenceBase = (PRESENCE_URL:gsub("/+$", "")) end
+local PresenceStop
+do
+	local HttpService = game:GetService("HttpService")
+	local SESSION_ID = (HttpService:GenerateGUID(false):gsub("-", "")) -- random, not linked to your account
+	local presenceBase = nil
+	if PRESENCE_URL ~= "" then presenceBase = (PRESENCE_URL:gsub("/+$", "")) end
 
-local function httpReq(method, url, body)
-	local f = request or http_request or (syn and syn.request) or (http and http.request)
-	if not f then return nil end
-	local ok, res = pcall(f, {
-		Url = url, Method = method, Headers = { ["Content-Type"] = "application/json" }, Body = body,
-	})
-	if ok and res and (res.StatusCode or 200) < 300 then return res.Body or "" end
-	return nil
-end
-
-local function setOnline(n)
-	if n then
-		OnlineLabel.Text = ("👥 %d online"):format(n)
-		OnlineLabel.TextColor3 = GOOD
-	elseif not presenceBase then
-		OnlineLabel.Text = "👥 counter not set up"
-		OnlineLabel.TextColor3 = SUB
-	else
-		OnlineLabel.Text = "👥 offline"
-		OnlineLabel.TextColor3 = WARN
+	local lastIssue = ""
+	local function httpReq(method, url, body)
+		local f = request or http_request or (syn and syn.request) or (http and http.request)
+		if not f then
+			lastIssue = "this executor has no HTTP request function"
+			return nil
+		end
+		local ok, res = pcall(f, {
+			Url = url, Method = method, Headers = { ["Content-Type"] = "application/json" }, Body = body,
+		})
+		if not ok or not res then
+			lastIssue = "request failed (blocked or no internet)"
+			return nil
+		end
+		local code = res.StatusCode or 200
+		if code < 300 then return res.Body or "" end
+		if code == 401 or code == 403 then
+			lastIssue = "permission denied - publish the database rules"
+		else
+			lastIssue = "HTTP " .. tostring(code)
+		end
+		return nil
 	end
-end
 
-local function presenceTick()
-	if not presenceBase then return end
-	httpReq("PUT", presenceBase .. "/janrepublic_online/" .. SESSION_ID .. ".json", [[{"t":{".sv":"timestamp"}}]])
-	local body = httpReq("GET", presenceBase .. "/janrepublic_online.json")
-	if not body or body == "" or body == "null" then setOnline(nil) return end
-	local ok, data = pcall(function() return HttpService:JSONDecode(body) end)
-	if not ok or type(data) ~= "table" then setOnline(nil) return end
+	local connecting = true
+	local lastReason = nil
+	local function setOnline(n, reason)
+		local txt, col
+		if n then
+			txt, col = ("👥 %d online"):format(n), GOOD
+		elseif not presenceBase then
+			txt, col = "👥 not set up", SUB
+		elseif connecting then
+			txt, col = "👥 connecting...", SUB
+		else
+			txt, col = "👥 offline", WARN
+		end
+		OnlineLabel.Text, OnlineLabel.TextColor3 = txt, col
+		HeaderSub.Text, HeaderSub.TextColor3 = "AUTO HUB  •  " .. txt, (n and GOOD) or SUB
+		if reason and reason ~= lastReason then
+			lastReason = reason
+			logLine("online counter: " .. reason)
+			setStatus("👥 " .. reason)
+		end
+	end
 
-	local mine = data[SESSION_ID]
-	local now = type(mine) == "table" and mine.t
-	if not now then setOnline(nil) return end
+	local function presenceTick()
+		if not presenceBase then return end
+		local put = httpReq("PUT", presenceBase .. "/janrepublic_online/" .. SESSION_ID .. ".json", [[{"t":{".sv":"timestamp"}}]])
+		if not put then setOnline(nil, lastIssue) return end
+		local body = httpReq("GET", presenceBase .. "/janrepublic_online.json")
+		if not body then setOnline(nil, lastIssue) return end
+		if body == "" or body == "null" then setOnline(nil, "empty answer from the database") return end
+		local ok, data = pcall(function() return HttpService:JSONDecode(body) end)
+		if not ok or type(data) ~= "table" then setOnline(nil, "unreadable answer from the database") return end
 
-	local count, removed = 0, 0
-	for id, v in pairs(data) do
-		local t = type(v) == "table" and v.t
-		if t then
-			if now - t <= 90000 then
-				count += 1
-			elseif now - t > 600000 and removed < 5 then
-				removed += 1
-				httpReq("DELETE", presenceBase .. "/janrepublic_online/" .. id .. ".json")
+		local mine = data[SESSION_ID]
+		local now = type(mine) == "table" and mine.t
+		if not now then setOnline(nil, "database did not return our entry") return end
+
+		local count, removed = 0, 0
+		for id, v in pairs(data) do
+			local t = type(v) == "table" and v.t
+			if t then
+				if now - t <= 90000 then
+					count += 1
+				elseif now - t > 600000 and removed < 5 then
+					removed += 1
+					httpReq("DELETE", presenceBase .. "/janrepublic_online/" .. id .. ".json")
+				end
 			end
 		end
+		connecting = false
+		lastReason = nil
+		setOnline(count)
 	end
-	setOnline(count)
-end
 
-setOnline(nil)
-task.spawn(function()
-	while Gui.Parent do
-		pcall(presenceTick)
-		for _ = 1, 30 do
-			if not Gui.Parent then break end
-			task.wait(1)
+	PresenceStop = function()
+		if presenceBase then
+			task.spawn(httpReq, "DELETE", presenceBase .. "/janrepublic_online/" .. SESSION_ID .. ".json")
 		end
 	end
-end)
+
+	setOnline(nil)
+	task.spawn(function()
+		while Gui.Parent do
+			local ok = pcall(presenceTick)
+			if connecting and presenceBase then
+				-- after the first attempt stop saying "connecting" even if it failed
+				connecting = false
+				if not ok then setOnline(nil, "counter error") end
+			end
+			for _ = 1, 30 do
+				if not Gui.Parent then break end
+				task.wait(1)
+			end
+		end
+	end)
+end
 
 CloseBtn.MouseButton1Click:Connect(function()
-	if presenceBase then
-		task.spawn(httpReq, "DELETE", presenceBase .. "/janrepublic_online/" .. SESSION_ID .. ".json")
-	end
+	if PresenceStop then PresenceStop() end
 	stopAll()
 	if SAVER_ON or BLACK_SCREEN or lowGfxApplied then setSaver(false) end
 	stopFx()
